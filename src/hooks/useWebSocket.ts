@@ -3,6 +3,9 @@ import type { ClientMessage, PluginMessage } from '@/types/protocol'
 import { useConnectionStore } from '@/store/connectionStore'
 import { usePlaybackStore } from '@/store/playbackStore'
 import { useKeyframeStore } from '@/store/keyframeStore'
+import { useCameraStore } from '@/store/cameraStore'
+
+const STATUS_THROTTLE_MS = 50 // max 20 updates/s for STATUS messages
 
 const WS_URL = 'ws://localhost:7777'
 const RECONNECT_DELAY = 3000
@@ -14,13 +17,16 @@ export function useWebSocket() {
 
   const { setStatus, setSceneReady, setError } = useConnectionStore()
   const { setState: setPlaybackState, setTime } = usePlaybackStore()
-  const { setKeyframes, upsertKeyframe } = useKeyframeStore()
+  const { setKeyframes, upsertAndSelect } = useKeyframeStore()
+  const { setCameraPos } = useCameraStore()
 
   const send = useCallback((msg: ClientMessage) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify(msg))
     }
   }, [])
+
+  const lastStatusTime = useRef(0)
 
   const connect = useCallback(() => {
     if (unmounted.current) return
@@ -39,23 +45,30 @@ export function useWebSocket() {
       try {
         const msg = JSON.parse(event.data as string) as PluginMessage
         switch (msg.type) {
-          case 'STATUS':
+          case 'STATUS': {
+            const now = performance.now()
+            if (now - lastStatusTime.current < STATUS_THROTTLE_MS) break
+            lastStatusTime.current = now
             setPlaybackState(msg.data.state)
             setTime(msg.data.time, msg.data.frame)
             break
+          }
           case 'STATE_SYNC':
             setKeyframes(msg.data.keyframes)
             setPlaybackState(msg.data.state)
             setTime(msg.data.time, 0)
             break
           case 'KEYFRAME_CAPTURED':
-            upsertKeyframe(msg.data)
+            upsertAndSelect(msg.data)
             break
           case 'SCENE_READY':
             setSceneReady(true, msg.data.sceneName)
             break
           case 'ERROR':
             setError(msg.data.message)
+            break
+          case 'CAMERA_POS':
+            setCameraPos({ pos: msg.data.pos, rot: msg.data.rot, fov: msg.data.fov })
             break
         }
       } catch {
@@ -75,7 +88,7 @@ export function useWebSocket() {
       setError('WebSocket connection error')
       ws.close()
     }
-  }, [send, setStatus, setSceneReady, setError, setPlaybackState, setTime, setKeyframes, upsertKeyframe])
+  }, [send, setStatus, setSceneReady, setError, setPlaybackState, setTime, setKeyframes, upsertAndSelect])
 
   useEffect(() => {
     unmounted.current = false

@@ -1,6 +1,6 @@
 import { Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
-import { Input } from '@/components/ui/Input'
+import { NumericInput } from '@/components/ui/NumericInput'
 import { useKeyframeStore } from '@/store/keyframeStore'
 import { EASING_LABELS } from '@/lib/easing'
 import type { ClientMessage, EasingType, Keyframe } from '@/types/protocol'
@@ -21,16 +21,16 @@ function Vec3Field({ label, value, onChange }: {
         {(['X', 'Y', 'Z'] as const).map((axis, i) => (
           <div key={axis} className="flex flex-col gap-0.5">
             <span className="text-[9px] text-[var(--color-text-muted)] text-center">{axis}</span>
-            <Input
-              type="number"
-              step="0.01"
-              value={value[i].toFixed(3)}
-              onChange={(e) => {
+            <NumericInput
+              value={value[i]}
+              onChange={(v) => {
                 const next = [...value] as [number, number, number]
-                next[i] = parseFloat(e.target.value) || 0
+                next[i] = v
                 onChange(next)
               }}
-              className="text-center text-xs px-1"
+              step={0.1}
+              steps={[0.1, 1, 10]}
+              decimals={3}
             />
           </div>
         ))}
@@ -77,13 +77,13 @@ export function KeyframeEditor({ send }: KeyframeEditorProps) {
       {/* Time */}
       <div className="flex flex-col gap-1">
         <span className="text-[10px] text-[var(--color-text-muted)] uppercase tracking-wider">Time (s)</span>
-        <Input
-          type="number"
-          step="0.1"
-          min="0"
-          value={kf.time.toFixed(3)}
-          onChange={(e) => update({ time: parseFloat(e.target.value) || 0 })}
-          className="text-xs"
+        <NumericInput
+          value={kf.time}
+          onChange={(v) => update({ time: v })}
+          step={0.1}
+          steps={[0.1, 1, 10]}
+          min={0}
+          decimals={3}
         />
       </div>
 
@@ -97,16 +97,16 @@ export function KeyframeEditor({ send }: KeyframeEditorProps) {
           {(['X', 'Y', 'Z', 'W'] as const).map((axis, i) => (
             <div key={axis} className="flex flex-col gap-0.5">
               <span className="text-[9px] text-[var(--color-text-muted)] text-center">{axis}</span>
-              <Input
-                type="number"
-                step="0.001"
-                value={kf.rot[i].toFixed(4)}
-                onChange={(e) => {
+              <NumericInput
+                value={kf.rot[i]}
+                onChange={(v) => {
                   const next = [...kf.rot] as [number, number, number, number]
-                  next[i] = parseFloat(e.target.value) || 0
+                  next[i] = v
                   update({ rot: next })
                 }}
-                className="text-center text-xs px-1"
+                step={0.001}
+                steps={[0.001, 0.01, 0.1]}
+                decimals={4}
               />
             </div>
           ))}
@@ -130,9 +130,9 @@ export function KeyframeEditor({ send }: KeyframeEditorProps) {
         </div>
       </div>
 
-      {/* Easing */}
+      {/* Easing (Position) */}
       <div className="flex flex-col gap-1">
-        <span className="text-[10px] text-[var(--color-text-muted)] uppercase tracking-wider">Easing</span>
+        <span className="text-[10px] text-[var(--color-text-muted)] uppercase tracking-wider">Easing (Position)</span>
         <div className="grid grid-cols-2 gap-1">
           {(Object.keys(EASING_LABELS) as EasingType[]).map((type) => (
             <button
@@ -140,6 +140,26 @@ export function KeyframeEditor({ send }: KeyframeEditorProps) {
               onClick={() => update({ easing: type })}
               className={`h-7 rounded text-xs transition-colors ${
                 kf.easing === type
+                  ? 'bg-[var(--color-accent)] text-white'
+                  : 'bg-[var(--color-surface-2)] text-[var(--color-text-muted)] hover:text-[var(--color-text)] border border-[var(--color-border)]'
+              }`}
+            >
+              {EASING_LABELS[type]}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Easing (Rotation) */}
+      <div className="flex flex-col gap-1">
+        <span className="text-[10px] text-[var(--color-text-muted)] uppercase tracking-wider">Easing (Rotation)</span>
+        <div className="grid grid-cols-2 gap-1">
+          {(Object.keys(EASING_LABELS) as EasingType[]).map((type) => (
+            <button
+              key={type}
+              onClick={() => update({ rotEasing: type })}
+              className={`h-7 rounded text-xs transition-colors ${
+                (kf.rotEasing ?? 'linear') === type
                   ? 'bg-[var(--color-accent)] text-white'
                   : 'bg-[var(--color-surface-2)] text-[var(--color-text-muted)] hover:text-[var(--color-text)] border border-[var(--color-border)]'
               }`}

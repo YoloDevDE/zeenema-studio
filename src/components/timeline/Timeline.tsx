@@ -10,7 +10,7 @@ interface TimelineProps {
 
 export function Timeline({ send }: TimelineProps) {
   const { keyframes, selectedId, selectKeyframe } = useKeyframeStore()
-  const { currentTime, useFrames } = usePlaybackStore()
+  const { currentTime, useFrames, setTime } = usePlaybackStore()
   const activeShot = useShotStore((s) => s.activeShot())
   const duration = activeShot?.durationSeconds ?? 10
   const fps = activeShot?.fps ?? 30
@@ -18,13 +18,41 @@ export function Timeline({ send }: TimelineProps) {
 
   const timeToPercent = (t: number) => Math.min(100, Math.max(0, (t / duration) * 100))
 
+  const isDraggingPlayhead = useRef(false)
+
   const handleRailClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    if (isDraggingPlayhead.current) return
     if (!railRef.current) return
     const rect = railRef.current.getBoundingClientRect()
     const x = e.clientX - rect.left
     const t = Math.max(0, Math.min(duration, (x / rect.width) * duration))
+    setTime(t, 0)
     send({ type: 'SEEK', data: { time: t } })
-  }, [duration, send])
+  }, [duration, send, setTime])
+
+  const handlePlayheadDrag = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    e.stopPropagation()
+    const rail = railRef.current
+    if (!rail) return
+    isDraggingPlayhead.current = true
+
+    const onMove = (me: MouseEvent) => {
+      const rect = rail.getBoundingClientRect()
+      const x = me.clientX - rect.left
+      const t = Math.max(0, Math.min(duration, (x / rect.width) * duration))
+      setTime(t, 0)
+      send({ type: 'SEEK', data: { time: t } })
+    }
+
+    const onUp = () => {
+      isDraggingPlayhead.current = false
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+    }
+
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }, [duration, send, setTime])
 
   const handleKeyframeDrag = useCallback((id: string, e: React.MouseEvent<HTMLDivElement>) => {
     e.stopPropagation()
@@ -84,21 +112,25 @@ export function Timeline({ send }: TimelineProps) {
       >
         {/* Playhead */}
         <div
-          className="absolute top-0 bottom-0 w-px bg-[var(--color-accent)] pointer-events-none z-10"
+          className="absolute top-0 bottom-0 w-px bg-[var(--color-accent)] z-10 cursor-ew-resize"
           style={{ left: `${timeToPercent(currentTime)}%` }}
+          onMouseDown={handlePlayheadDrag}
         >
-          <div className="w-2 h-2 rounded-full bg-[var(--color-accent)] -translate-x-1/2 -translate-y-0.5" />
+          <div className="w-3 h-3 rounded-full bg-[var(--color-accent)] -translate-x-1/2 -translate-y-0.5" />
         </div>
 
         {/* Keyframe markers */}
-        {keyframes.map((kf) => (
+        {keyframes.map((kf, idx) => (
           <div
             key={kf.id}
-            className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 z-20 cursor-grab active:cursor-grabbing"
+            className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 z-20 cursor-grab active:cursor-grabbing flex flex-col items-center"
             style={{ left: `${timeToPercent(kf.time)}%` }}
-            onClick={(e) => { e.stopPropagation(); selectKeyframe(kf.id) }}
+            onClick={(e) => { e.stopPropagation(); selectKeyframe(kf.id); send({ type: 'SEEK', data: { time: kf.time } }) }}
             onMouseDown={(e) => handleKeyframeDrag(kf.id, e)}
           >
+            <span className="text-[9px] font-mono text-[var(--color-text-muted)] -mt-4 select-none">
+              {idx + 1}
+            </span>
             <div
               className={`w-3 h-3 rotate-45 border transition-colors ${
                 kf.id === selectedId

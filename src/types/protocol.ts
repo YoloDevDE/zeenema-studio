@@ -11,6 +11,8 @@ export interface Keyframe {
   fov: number
   easing: EasingType
   bezierHandles?: [number, number, number, number]
+  rotEasing?: EasingType
+  rotBezierHandles?: [number, number, number, number]
 }
 
 export interface Shot {
@@ -44,3 +46,4 @@ export type PluginMessage =
   | { type: 'STATE_SYNC'; data: { keyframes: Keyframe[]; state: PlaybackState; time: number } }
   | { type: 'SCENE_READY'; data: { sceneName: string } }
   | { type: 'ERROR'; data: { message: string } }
+  | { type: 'CAMERA_POS'; data: { pos: [number, number, number]; rot: [number, number, number]; fov: number } }
