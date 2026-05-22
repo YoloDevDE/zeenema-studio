@@ -1,5 +1,14 @@
 // Catmull-Rom spline evaluation for camera path preview
+import { applyEasing } from '@/lib/easing'
+import type { EasingType } from '@/types/protocol'
+
 export type Vec3 = [number, number, number]
+
+export interface SplineKeyframe {
+  pos: Vec3
+  easing: EasingType
+  bezierHandles?: [number, number, number, number]
+}
 
 function catmullRom(p0: number, p1: number, p2: number, p3: number, t: number): number {
   return 0.5 * (
@@ -18,11 +27,13 @@ export function catmullRomVec3(p0: Vec3, p1: Vec3, p2: Vec3, p3: Vec3, t: number
   ]
 }
 
-export function buildSplinePath(positions: Vec3[], samplesPerSegment = 20): Vec3[] {
+/** Build spline path with optional per-segment easing */
+export function buildSplinePath(
+  positions: Vec3[],
+  samplesPerSegment = 20,
+  keyframes?: SplineKeyframe[],
+): Vec3[] {
   if (positions.length < 2) return positions
-  if (positions.length === 2) {
-    return [positions[0], positions[1]]
-  }
 
   const points: Vec3[] = []
   const n = positions.length
@@ -33,8 +44,14 @@ export function buildSplinePath(positions: Vec3[], samplesPerSegment = 20): Vec3
     const p2 = positions[i + 1]
     const p3 = positions[Math.min(n - 1, i + 2)]
 
+    // Easing from the keyframe at segment start (i)
+    const kf = keyframes?.[i]
+    const easing: EasingType = kf?.easing ?? 'linear'
+    const handles = kf?.bezierHandles
+
     for (let s = 0; s < samplesPerSegment; s++) {
-      const t = s / samplesPerSegment
+      const rawT = s / samplesPerSegment
+      const t = applyEasing(rawT, easing, handles)
       points.push(catmullRomVec3(p0, p1, p2, p3, t))
     }
   }

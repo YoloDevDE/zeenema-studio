@@ -129,22 +129,6 @@ export function ControlPanel({ send }: ControlPanelProps) {
           className="w-16 px-1 py-0.5 text-xs font-mono bg-[var(--color-surface-2)] border border-[var(--color-border)] rounded text-[var(--color-text)] focus:outline-none focus:border-[var(--color-accent)]"
           title={useFrames ? 'Duration in frames' : 'Duration in seconds'}
         />
-        <label className="text-[10px] text-[var(--color-text-muted)]">fps</label>
-        <input
-          type="number"
-          min={1}
-          max={120}
-          step={1}
-          value={fps}
-          onChange={(e) => {
-            if (!shot) return
-            const v = parseInt(e.target.value)
-            if (isNaN(v) || v <= 0) return
-            updateShotSettings(shot.id, { fps: v })
-          }}
-          className="w-12 px-1 py-0.5 text-xs font-mono bg-[var(--color-surface-2)] border border-[var(--color-border)] rounded text-[var(--color-text)] focus:outline-none focus:border-[var(--color-accent)]"
-          title="Frames per second"
-        />
       </div>
 
       <div className="flex-1" />

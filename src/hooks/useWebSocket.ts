@@ -4,6 +4,7 @@ import { useConnectionStore } from '@/store/connectionStore'
 import { usePlaybackStore } from '@/store/playbackStore'
 import { useKeyframeStore } from '@/store/keyframeStore'
 import { useCameraStore } from '@/store/cameraStore'
+import { useLevelStore } from '@/store/levelStore'
 
 const STATUS_THROTTLE_MS = 50 // max 20 updates/s for STATUS messages
 
@@ -19,6 +20,7 @@ export function useWebSocket() {
   const { setState: setPlaybackState, setTime } = usePlaybackStore()
   const { setKeyframes, upsertAndSelect } = useKeyframeStore()
   const { setCameraPos } = useCameraStore()
+  const { setLevel } = useLevelStore()
 
   const send = useCallback((msg: ClientMessage) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
@@ -69,6 +71,10 @@ export function useWebSocket() {
             break
           case 'CAMERA_POS':
             setCameraPos({ pos: msg.data.pos, rot: msg.data.rot, fov: msg.data.fov })
+            break
+          case 'LEVEL_DATA':
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            setLevel(msg.data.levelName, msg.data.blox as any[])
             break
         }
       } catch {

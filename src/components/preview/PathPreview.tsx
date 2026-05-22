@@ -1,11 +1,22 @@
-import { useMemo, useRef, useEffect, useState, useCallback } from 'react'
+import { useMemo, useRef, useEffect, useState, useCallback, useTransition } from 'react'
+import type { ClientMessage } from '@/types/protocol'
 import { Canvas, useThree, useFrame } from '@react-three/fiber'
 import { Line } from '@react-three/drei'
 import * as THREE from 'three'
 import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js'
 import { useKeyframeStore } from '@/store/keyframeStore'
 import { useCameraStore } from '@/store/cameraStore'
-import { buildSplinePath } from '@/lib/spline'
+import { useLevelStore } from '@/store/levelStore'
+import { usePlaybackStore } from '@/store/playbackStore'
+import { buildSplinePath, type SplineKeyframe } from '@/lib/spline'
+import { applyEasing } from '@/lib/easing'
+import {
+  getCachedBlocksInfo,
+  saveBlocksToCache,
+  loadBlocksFromCache,
+  clearBlocksCache,
+  type CachedBlocksInfo,
+} from '@/lib/blockMeshCache'
 
 // ── Zeeplevel JSON types ──────────────────────────────────────────────────────
 interface CV3 { x: number; y: number; z: number }
@@ -156,30 +167,133 @@ function FPSControls() {
   return null
 }
 
-// ── Camera path spline + keyframe spheres ─────────────────────────────────────
+// ── Single keyframe node ──────────────────────────────────────────────────────
+// Shared geometries to avoid per-instance allocations
+const _nodeGeoOuter = new THREE.SphereGeometry(0.45, 8, 6)
+const _nodeGeoInner = new THREE.SphereGeometry(0.16, 6, 4)
+const _nodeGeoOuterSel = new THREE.SphereGeometry(0.55, 8, 6)
+const _nodeGeoInnerSel = new THREE.SphereGeometry(0.22, 6, 4)
+
+function KeyframeNode({ kf, isSelected }: { kf: { id: string; pos: [number,number,number] }; idx?: number; isSelected: boolean }) {
+  return (
+    <group position={[kf.pos[0], kf.pos[1], kf.pos[2]]}>
+      {/* Outer translucent sphere */}
+      <mesh geometry={isSelected ? _nodeGeoOuterSel : _nodeGeoOuter}>
+        <meshBasicMaterial color={isSelected ? '#818cf8' : '#6366f1'} transparent opacity={isSelected ? 0.3 : 0.18} />
+      </mesh>
+      {/* Inner solid dot */}
+      <mesh geometry={isSelected ? _nodeGeoInnerSel : _nodeGeoInner}>
+        <meshBasicMaterial color={isSelected ? '#c7d2fe' : '#818cf8'} />
+      </mesh>
+    </group>
+  )
+}
+
+// ── Animated camera frustum showing current interpolated position ────────────
+function AnimatedCameraMarker() {
+  const keyframes = useKeyframeStore((s) => s.keyframes)
+  const currentTime = usePlaybackStore((s) => s.currentTime)
+  const groupRef = useRef<THREE.Group>(null)
+  const { invalidate } = useThree()
+
+  useEffect(() => { invalidate() }, [currentTime, invalidate])
+
+  const pose = useMemo(() => {
+    if (keyframes.length < 2) return null
+    const sorted = [...keyframes].sort((a, b) => a.time - b.time)
+    const t = currentTime
+    // Helper: Unity quat [x,y,z,w] → Three.js Quaternion (negate x and z for left→right hand)
+    const toThreeQuat = (r: [number, number, number, number]) =>
+      new THREE.Quaternion(-r[0], r[1], -r[2], r[3])
+
+    if (t <= sorted[0].time) {
+      return { pos: sorted[0].pos, rot: toThreeQuat(sorted[0].rot) }
+    }
+    if (t >= sorted[sorted.length - 1].time) {
+      const last = sorted[sorted.length - 1]
+      return { pos: last.pos, rot: toThreeQuat(last.rot) }
+    }
+    let i = 0
+    while (i < sorted.length - 1 && sorted[i + 1].time <= t) i++
+    const kfA = sorted[i]
+    const kfB = sorted[i + 1]
+    const segDur = kfB.time - kfA.time
+    const rawT = segDur > 0 ? (t - kfA.time) / segDur : 0
+    const easedT = applyEasing(rawT, kfA.easing ?? 'linear', kfA.bezierHandles)
+    const rotEasedT = applyEasing(rawT, kfA.rotEasing ?? kfA.easing ?? 'linear', kfA.rotBezierHandles ?? kfA.bezierHandles)
+
+    // Position: linear lerp (spline handled by path line)
+    const pos: [number, number, number] = [
+      kfA.pos[0] + (kfB.pos[0] - kfA.pos[0]) * easedT,
+      kfA.pos[1] + (kfB.pos[1] - kfA.pos[1]) * easedT,
+      kfA.pos[2] + (kfB.pos[2] - kfA.pos[2]) * easedT,
+    ]
+    // Rotation: slerp with separate rotEasing
+    const rot = toThreeQuat(kfA.rot).slerp(toThreeQuat(kfB.rot), rotEasedT)
+    return { pos, rot }
+  }, [keyframes, currentTime])
+
+  if (!pose) return null
+
+  // Unity left-handed → Three.js right-handed (Z flip)
+  const threePos = new THREE.Vector3(pose.pos[0], pose.pos[1], -pose.pos[2])
+  const threeQuat = pose.rot
+
+  return (
+    <group ref={groupRef} position={threePos} quaternion={threeQuat}>
+      {/* Camera body */}
+      <mesh>
+        <boxGeometry args={[0.6, 0.4, 0.5]} />
+        <meshBasicMaterial color="#f59e0b" transparent opacity={0.8} />
+      </mesh>
+      {/* Frustum lines */}
+      <lineSegments>
+        <edgesGeometry args={[new THREE.ConeGeometry(0.5, 1.0, 4)]} />
+        <lineBasicMaterial color="#fbbf24" />
+      </lineSegments>
+    </group>
+  )
+}
+
+// ── Camera path spline + keyframe nodes ──────────────────────────────────────
 function CameraPath() {
   const keyframes = useKeyframeStore((s) => s.keyframes)
   const selectedId = useKeyframeStore((s) => s.selectedId)
 
+  // Unity left-handed → Three.js right-handed: negate Z
+  const threePositions = useMemo(
+    () => keyframes.map((kf) => [kf.pos[0], kf.pos[1], -kf.pos[2]] as [number, number, number]),
+    [keyframes],
+  )
+
+  const splineKeyframes = useMemo<SplineKeyframe[]>(
+    () => keyframes.map((kf) => ({
+      pos: [kf.pos[0], kf.pos[1], -kf.pos[2]],
+      easing: kf.easing,
+      bezierHandles: kf.bezierHandles,
+    })),
+    [keyframes],
+  )
+
   const points = useMemo(() => {
-    if (keyframes.length < 2) return []
-    const positions = keyframes.map((kf) => kf.pos)
-    return buildSplinePath(positions, 20)
-  }, [keyframes])
+    if (threePositions.length < 2) return []
+    return buildSplinePath(threePositions, 20, splineKeyframes)
+  }, [threePositions, splineKeyframes])
 
-  if (points.length < 2) return null
-
-  const linePoints = points.map((p) => new THREE.Vector3(p[0], p[1], p[2]))
+  const linePoints = useMemo(
+    () => points.map((p) => new THREE.Vector3(p[0], p[1], p[2])),
+    [points],
+  )
 
   return (
     <>
-      <Line points={linePoints} color="#6366f1" lineWidth={1.5} />
-      {keyframes.map((kf) => (
-        <mesh key={kf.id} position={[kf.pos[0], kf.pos[1], kf.pos[2]]}>
-          <sphereGeometry args={[0.15, 6, 6]} />
-          <meshBasicMaterial color={kf.id === selectedId ? '#818cf8' : '#4b5563'} />
-        </mesh>
+      {linePoints.length >= 2 && (
+        <Line points={linePoints} color="#6366f1" lineWidth={2} />
+      )}
+      {threePositions.map((pos, idx) => (
+        <KeyframeNode key={keyframes[idx].id} kf={{ id: keyframes[idx].id, pos }} idx={idx} isSelected={keyframes[idx].id === selectedId} />
       ))}
+      <AnimatedCameraMarker />
     </>
   )
 }
@@ -192,13 +306,13 @@ function BlockMesh({
   block: BlockPropertyJSON
   geoMap: BlockGeometryMap
 }) {
-  // Unity tr.eulerAngles applies internally as YXZ order.
-  // Unity is left-handed → negate Y rotation when converting to right-handed Three.js.
+  // Unity left-handed (Z forward) → Three.js right-handed (Z backward):
+  // Flip Z axis: negate X and Y rotations, keep Z.
   const euler = useMemo(
     () => new THREE.Euler(
-      THREE.MathUtils.degToRad(-block.r.x),  // X: negiert
-      THREE.MathUtils.degToRad(-block.r.y),  // Y: negiert (Z-Achsen-Flip)
-      THREE.MathUtils.degToRad(block.r.z),   // Z: nicht negiert
+      THREE.MathUtils.degToRad(-block.r.x),
+      THREE.MathUtils.degToRad(-block.r.y),
+      THREE.MathUtils.degToRad(block.r.z),
       'YXZ',
     ),
     [block.r.x, block.r.y, block.r.z],
@@ -284,17 +398,116 @@ function parseOBJ(text: string): THREE.BufferGeometry[] {
   return geos
 }
 
+// ── Infinite grid (fades with distance) ──────────────────────────────────────
+function InfiniteGrid() {
+  const { camera, invalidate } = useThree()
+  const meshRef = useRef<THREE.Mesh>(null)
+
+  const material = useMemo(() => new THREE.ShaderMaterial({
+    side: THREE.DoubleSide,
+    transparent: true,
+    depthWrite: false,
+    uniforms: {
+      uCamPos: { value: new THREE.Vector3() },
+      uFar: { value: 50000 },
+      uColor: { value: new THREE.Color('#2a2d38') },
+      uColorBright: { value: new THREE.Color('#3a3d4a') },
+    },
+    vertexShader: `
+      varying vec3 vWorldPos;
+      void main() {
+        vec4 wp = modelMatrix * vec4(position, 1.0);
+        vWorldPos = wp.xyz;
+        gl_Position = projectionMatrix * viewMatrix * wp;
+      }
+    `,
+    fragmentShader: `
+      uniform vec3 uCamPos;
+      uniform float uFar;
+      uniform vec3 uColor;
+      uniform vec3 uColorBright;
+      varying vec3 vWorldPos;
+      float gridLine(float coord, float spacing) {
+        float f = abs(fract(coord / spacing) - 0.5);
+        float df = fwidth(coord / spacing);
+        return clamp(0.5 - f / df, 0.0, 1.0);
+      }
+      void main() {
+        float dist = length(vWorldPos.xz - uCamPos.xz);
+        float fade = 1.0 - smoothstep(uFar * 0.3, uFar * 0.7, dist);
+        float g1 = gridLine(vWorldPos.x, 1.0) + gridLine(vWorldPos.z, 1.0);
+        float g10 = gridLine(vWorldPos.x, 10.0) + gridLine(vWorldPos.z, 10.0);
+        float g100 = gridLine(vWorldPos.x, 100.0) + gridLine(vWorldPos.z, 100.0);
+        float alpha = clamp(g1 * 0.15 + g10 * 0.35 + g100 * 0.6, 0.0, 1.0) * fade;
+        vec3 col = mix(uColor, uColorBright, clamp(g100, 0.0, 1.0));
+        gl_FragColor = vec4(col, alpha);
+      }
+    `,
+  }), [])
+
+  const lastCamPos = useRef(new THREE.Vector3())
+  useFrame(() => {
+    if (!meshRef.current) return
+    const cam = camera.position
+    if (!lastCamPos.current.equals(cam)) {
+      meshRef.current.position.set(cam.x, 0, cam.z)
+      material.uniforms.uCamPos.value.copy(cam)
+      lastCamPos.current.copy(cam)
+      invalidate()
+    }
+  })
+
+  return (
+    <mesh ref={meshRef} rotation={[-Math.PI / 2, 0, 0]} material={material}>
+      <planeGeometry args={[100000, 100000]} />
+    </mesh>
+  )
+}
+
 // ── Main component ────────────────────────────────────────────────────────────
-export function PathPreview() {
+export function PathPreview({ send }: { send: (msg: ClientMessage) => void }) {
   const keyframes = useKeyframeStore((s) => s.keyframes)
-  const [levelBlocks, setLevelBlocks] = useState<BlockPropertyJSON[]>([])
-  const [levelName, setLevelName] = useState<string | null>(null)
+  // Level from store (pushed via WebSocket) or local file upload
+  const storeLevelBlocks = useLevelStore((s) => s.blocks)
+  const storeLevelName = useLevelStore((s) => s.levelName)
+  const [fileLevelBlocks, setFileLevelBlocks] = useState<BlockPropertyJSON[]>([])
+  const [fileLevelName, setFileLevelName] = useState<string | null>(null)
+  // Prefer store level (from game) over file level
+  const levelBlocks = storeLevelName ? storeLevelBlocks : fileLevelBlocks
+  const levelName = storeLevelName ?? fileLevelName
+
   const [geoMap, setGeoMap] = useState<BlockGeometryMap>(new Map())
   const [meshesLoaded, setMeshesLoaded] = useState(false)
   const [meshLoadProgress, setMeshLoadProgress] = useState<{ loaded: number; total: number } | null>(null)
+  const [cacheInfo, setCacheInfo] = useState<CachedBlocksInfo | null>(null)
+  const [, startTransition] = useTransition()
 
   const levelFileRef = useRef<HTMLInputElement>(null)
   const blocksFileRef = useRef<HTMLInputElement>(null)
+
+  // Check cache on mount and auto-load if available
+  useEffect(() => {
+    getCachedBlocksInfo().then(async (info) => {
+      if (!info) return
+      setCacheInfo(info)
+      // Auto-load meshes from cache
+      setMeshLoadProgress({ loaded: 0, total: 1 })
+      try {
+        const cached = await loadBlocksFromCache((l, t) => setMeshLoadProgress({ loaded: l, total: t }))
+        if (!cached) { setMeshLoadProgress(null); return }
+        const map = await buildGeoMap(cached.blocksJson, cached.objFiles, (l, t) => setMeshLoadProgress({ loaded: l, total: t }))
+        startTransition(() => {
+          setGeoMap(map)
+          setMeshesLoaded(true)
+          setMeshLoadProgress(null)
+        })
+      } catch (err) {
+        console.error('Auto-load from cache failed:', err)
+        setMeshLoadProgress(null)
+      }
+    })
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   // Load .zeeplevel file
   const handleLevelLoad = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
@@ -305,8 +518,8 @@ export function PathPreview() {
       try {
         const json = JSON.parse(ev.target?.result as string) as ZeepLevel
         if (!Array.isArray(json.blox)) throw new Error('Invalid .zeeplevel format')
-        setLevelBlocks(json.blox)
-        setLevelName(file.name)
+        setFileLevelBlocks(json.blox)
+        setFileLevelName(file.name)
       } catch (err) {
         console.error('Error loading level:', err)
         alert('Invalid .zeeplevel file')
@@ -316,22 +529,70 @@ export function PathPreview() {
     e.target.value = ''
   }, [])
 
-  // Load blocks/ folder (blocks.json + OBJ files)
+  // Core: parse mapping + obj texts → BlockGeometryMap
+  const buildGeoMap = useCallback(async (
+    blocksJsonText: string,
+    objTexts: Map<string, string>,
+    onProgress: (l: number, t: number) => void,
+  ): Promise<BlockGeometryMap> => {
+    const mapping = JSON.parse(blocksJsonText) as BlockMappingEntry[]
+    const map: BlockGeometryMap = new Map()
+    const toLoad = mapping.filter((e) =>
+      e.pieces ? e.pieces.some((p) => objTexts.has(p.file)) : (e.file && objTexts.has(e.file!))
+    )
+    let loaded = 0
+    for (const entry of toLoad) {
+      const pieceGeos: BlockPieceGeo[] = []
+      if (entry.pieces && entry.pieces.length > 0) {
+        for (const piece of entry.pieces) {
+          const text = objTexts.get(piece.file)
+          if (!text) continue
+          for (const geo of parseOBJ(text))
+            pieceGeos.push({ geo, defaultActive: piece.defaultActive, propertyIndex: piece.propertyIndex })
+        }
+      } else if (entry.file && objTexts.has(entry.file)) {
+        for (const geo of parseOBJ(objTexts.get(entry.file)!))
+          pieceGeos.push({ geo, defaultActive: true, propertyIndex: -1 })
+      }
+      if (pieceGeos.length > 0)
+        map.set(entry.id, { pieces: pieceGeos, defaultEuler: entry.defaultEuler ?? [0, 0, 0], defaultPosition: entry.defaultPosition ?? [0, 0, 0] })
+      loaded++
+      onProgress(loaded, toLoad.length)
+    }
+    return map
+  }, [])
+
+  // Load from IndexedDB cache
+  const handleLoadFromCache = useCallback(async () => {
+    setMeshLoadProgress({ loaded: 0, total: 1 })
+    try {
+      const cached = await loadBlocksFromCache((l, t) => setMeshLoadProgress({ loaded: l, total: t }))
+      if (!cached) { alert('No cached block meshes found.'); setMeshLoadProgress(null); return }
+      const map = await buildGeoMap(cached.blocksJson, cached.objFiles, (l, t) => setMeshLoadProgress({ loaded: l, total: t }))
+      startTransition(() => {
+        setGeoMap(map)
+        setMeshesLoaded(true)
+        setMeshLoadProgress(null)
+      })
+    } catch (err) {
+      console.error('Error loading from cache:', err)
+      alert('Error loading cached block meshes')
+      setMeshLoadProgress(null)
+    }
+  }, [buildGeoMap, startTransition])
+
+  // Load blocks/ folder (blocks.json + OBJ files) and save to cache
   const handleBlocksLoad = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files
     if (!files || files.length === 0) return
 
-    // Find blocks.json
     let mappingFile: File | null = null
-    const objFiles = new Map<string, File>()
-
+    const objFileMap = new Map<string, File>()
     for (let i = 0; i < files.length; i++) {
       const f = files[i]
-      const name = f.name
-      if (name === 'blocks.json') mappingFile = f
-      else if (name.endsWith('.obj')) objFiles.set(name, f)
+      if (f.name === 'blocks.json') mappingFile = f
+      else if (f.name.endsWith('.obj')) objFileMap.set(f.name, f)
     }
-
     if (!mappingFile) {
       alert('blocks.json not found. Please select the entire "blocks" folder.')
       e.target.value = ''
@@ -341,54 +602,28 @@ export function PathPreview() {
     const reader = new FileReader()
     reader.onload = async (ev) => {
       try {
-        const mapping = JSON.parse(ev.target?.result as string) as BlockMappingEntry[]
-        const map: BlockGeometryMap = new Map()
-
-        // Collect all entries that have at least one piece OBJ file available
-        const toLoad = mapping.filter((e) =>
-          e.pieces ? e.pieces.some((p) => objFiles.has(p.file)) : (e.file && objFiles.has(e.file!))
-        )
-        const total = toLoad.length
-        let loaded = 0
-        setMeshLoadProgress({ loaded: 0, total })
-
-        for (const entry of toLoad) {
-          const pieceGeos: BlockPieceGeo[] = []
-
-          if (entry.pieces && entry.pieces.length > 0) {
-            // New format: per-piece OBJ files
-            for (const piece of entry.pieces) {
-              const objFile = objFiles.get(piece.file)
-              if (!objFile) continue
-              const text = await objFile.text()
-              const geos = parseOBJ(text)
-              for (const geo of geos) {
-                pieceGeos.push({ geo, defaultActive: piece.defaultActive, propertyIndex: piece.propertyIndex })
-              }
-            }
-          } else if (entry.file && objFiles.has(entry.file)) {
-            // Legacy format: single OBJ file
-            const text = await objFiles.get(entry.file)!.text()
-            const geos = parseOBJ(text)
-            for (const geo of geos) {
-              pieceGeos.push({ geo, defaultActive: true, propertyIndex: -1 })
-            }
-          }
-
-          if (pieceGeos.length > 0) {
-            map.set(entry.id, {
-              pieces: pieceGeos,
-              defaultEuler: entry.defaultEuler ?? [0, 0, 0],
-              defaultPosition: entry.defaultPosition ?? [0, 0, 0],
-            })
-          }
-          loaded++
-          setMeshLoadProgress({ loaded, total })
+        const blocksJsonText = ev.target?.result as string
+        // Read all OBJ texts
+        const objTexts = new Map<string, string>()
+        const objEntries = Array.from(objFileMap.entries())
+        setMeshLoadProgress({ loaded: 0, total: objEntries.length })
+        let ri = 0
+        for (const [name, file] of objEntries) {
+          objTexts.set(name, await file.text())
+          ri++
+          setMeshLoadProgress({ loaded: ri, total: objEntries.length })
         }
-
-        setGeoMap(map)
-        setMeshesLoaded(true)
-        setMeshLoadProgress(null)
+        // Save to IndexedDB cache
+        await saveBlocksToCache(blocksJsonText, objTexts)
+        const info = await getCachedBlocksInfo()
+        setCacheInfo(info)
+        // Build geo map
+        const map = await buildGeoMap(blocksJsonText, objTexts, (l, t) => setMeshLoadProgress({ loaded: l, total: t }))
+        startTransition(() => {
+          setGeoMap(map)
+          setMeshesLoaded(true)
+          setMeshLoadProgress(null)
+        })
       } catch (err) {
         console.error('Error loading block meshes:', err)
         alert('Error loading block meshes')
@@ -397,11 +632,19 @@ export function PathPreview() {
     }
     reader.readAsText(mappingFile)
     e.target.value = ''
-  }, [])
+  }, [buildGeoMap, startTransition])
 
   const clearLevel = useCallback(() => {
-    setLevelBlocks([])
-    setLevelName(null)
+    setFileLevelBlocks([])
+    setFileLevelName(null)
+    useLevelStore.getState().clearLevel()
+  }, [])
+
+  const handleClearCache = useCallback(async () => {
+    await clearBlocksCache()
+    setCacheInfo(null)
+    setGeoMap(new Map())
+    setMeshesLoaded(false)
   }, [])
 
   const hasContent = keyframes.length > 0 || levelBlocks.length > 0
@@ -416,17 +659,35 @@ export function PathPreview() {
           </span>
         )}
 
-        {/* Load block meshes folder */}
+        {/* Load block meshes: from cache or folder */}
+        {!meshesLoaded && cacheInfo && !meshLoadProgress && (
+          <button
+            className="text-[10px] px-2 py-0.5 rounded bg-[var(--color-surface-2)] border border-[var(--color-border)] text-[var(--color-text-muted)] hover:text-[var(--color-text)] transition-colors"
+            onClick={handleLoadFromCache}
+            title={`Load cached meshes (${cacheInfo.blockCount} blocks, saved ${cacheInfo.savedAt})`}
+          >
+            ↺ Load Cached Meshes
+          </button>
+        )}
         <button
           className="text-[10px] px-2 py-0.5 rounded bg-[var(--color-surface-2)] border border-[var(--color-border)] text-[var(--color-text-muted)] hover:text-[var(--color-text)] transition-colors"
-          onClick={() => blocksFileRef.current?.click()}
-          title='Load exported "blocks" folder (blocks.json + OBJ files)'
+          onClick={() => meshesLoaded ? handleClearCache() : blocksFileRef.current?.click()}
+          title={meshesLoaded ? 'Clear cached meshes' : 'Load exported "blocks" folder (blocks.json + OBJ files)'}
         >
           {meshLoadProgress
             ? `Loading… ${meshLoadProgress.loaded}/${meshLoadProgress.total}`
             : meshesLoaded
-            ? `✓ Meshes (${geoMap.size})`
+            ? `✓ Meshes (${geoMap.size}) ✕`
             : '+ Block Meshes'}
+        </button>
+
+        {/* Send level from game */}
+        <button
+          className="text-[10px] px-2 py-0.5 rounded bg-[var(--color-surface-2)] border border-[var(--color-border)] text-[var(--color-text-muted)] hover:text-[var(--color-text)] transition-colors"
+          onClick={() => send({ type: 'GET_LEVEL' })}
+          title="Request current level from game (must be in-game or in editor)"
+        >
+          ⬇ Level from Game
         </button>
 
         {/* Load .zeeplevel */}
@@ -437,6 +698,11 @@ export function PathPreview() {
         >
           {levelName ? 'Change Level' : '+ Level (.zeeplevel)'}
         </button>
+        {storeLevelName && (
+          <span className="text-[10px] text-[var(--color-accent)] bg-[var(--color-surface)]/80 px-2 py-0.5 rounded">
+            ⚡ From Game
+          </span>
+        )}
 
         {levelName && (
           <button
@@ -472,6 +738,22 @@ export function PathPreview() {
         Click to activate · WASD move · QE up/down · Scroll = speed · ESC exit
       </div>
 
+      {/* Loading screen overlay */}
+      {meshLoadProgress && (
+        <div className="absolute inset-0 z-20 flex flex-col items-center justify-center bg-[var(--color-background)]/80 backdrop-blur-sm gap-3">
+          <div className="text-sm text-[var(--color-text)]">Loading block meshes…</div>
+          <div className="w-64 h-1.5 rounded-full bg-[var(--color-surface-2)] overflow-hidden">
+            <div
+              className="h-full bg-[var(--color-accent)] transition-all duration-100"
+              style={{ width: `${meshLoadProgress.total > 0 ? Math.round((meshLoadProgress.loaded / meshLoadProgress.total) * 100) : 0}%` }}
+            />
+          </div>
+          <div className="text-[11px] text-[var(--color-text-muted)] tabular-nums">
+            {meshLoadProgress.loaded} / {meshLoadProgress.total}
+          </div>
+        </div>
+      )}
+
       {!hasContent ? (
         <div className="flex items-center justify-center h-full text-[var(--color-text-muted)] text-xs">
           No keyframes yet
@@ -492,7 +774,7 @@ export function PathPreview() {
           )}
           <CameraPath />
           <FPSControls />
-          <gridHelper args={[200, 200, '#2a2d38', '#1e2028']} />
+          <InfiniteGrid />
         </Canvas>
       )}
     </div>

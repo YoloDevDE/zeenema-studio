@@ -3,27 +3,21 @@ import { useWebSocket } from '@/hooks/useWebSocket'
 import { usePlaybackSync } from '@/hooks/usePlaybackSync'
 import { Header } from '@/components/layout/Header'
 import { KeyframeEditor } from '@/components/keyframe/KeyframeEditor'
+import { KeyframeTable } from '@/components/keyframe/KeyframeTable'
 import { Timeline } from '@/components/timeline/Timeline'
 import { ControlPanel } from '@/components/control/ControlPanel'
 import { PathPreview } from '@/components/preview/PathPreview'
-import { KeyframeList } from '@/components/keyframe/KeyframeList'
-import { ChevronDown, ChevronUp } from 'lucide-react'
 
 const INSPECTOR_MIN = 160
 const INSPECTOR_MAX = 480
 const INSPECTOR_DEFAULT = 224
 
-const KF_LIST_MIN = 60
-const KF_LIST_MAX = 400
-const KF_LIST_DEFAULT = 140
-
 export default function App() {
   const { send } = useWebSocket()
   usePlaybackSync()
 
+  const [showPreview, setShowPreview] = useState(true)
   const [inspectorWidth, setInspectorWidth] = useState(INSPECTOR_DEFAULT)
-  const [kfListHeight, setKfListHeight] = useState(KF_LIST_DEFAULT)
-  const [kfListOpen, setKfListOpen] = useState(true)
 
   // ── Inspector horizontal resize ──────────────────────────────────────────
   const inspectorDragRef = useRef(false)
@@ -50,31 +44,6 @@ export default function App() {
     window.addEventListener('mouseup', onUp)
   }, [inspectorWidth])
 
-  // ── KeyframeList vertical resize ─────────────────────────────────────────
-  const kfDragRef = useRef(false)
-  const kfStartY = useRef(0)
-  const kfStartH = useRef(0)
-
-  const onKfListDragStart = useCallback((e: React.MouseEvent) => {
-    e.preventDefault()
-    kfDragRef.current = true
-    kfStartY.current = e.clientY
-    kfStartH.current = kfListHeight
-
-    const onMove = (me: MouseEvent) => {
-      if (!kfDragRef.current) return
-      // dragging up = bigger, down = smaller (handle is at top of panel)
-      const delta = kfStartY.current - me.clientY
-      setKfListHeight(Math.min(KF_LIST_MAX, Math.max(KF_LIST_MIN, kfStartH.current + delta)))
-    }
-    const onUp = () => {
-      kfDragRef.current = false
-      window.removeEventListener('mousemove', onMove)
-      window.removeEventListener('mouseup', onUp)
-    }
-    window.addEventListener('mousemove', onMove)
-    window.addEventListener('mouseup', onUp)
-  }, [kfListHeight])
 
   return (
     <div className="flex flex-col h-screen bg-[var(--color-background)] text-[var(--color-text)] overflow-hidden">
@@ -102,49 +71,36 @@ export default function App() {
           />
         </aside>
 
-        {/* Center — 3D preview */}
-        <main className="flex-1 flex flex-col overflow-hidden">
-          <div className="flex-1 relative">
-            <PathPreview />
-          </div>
+        {/* Center — 3D preview or expanded keyframe list */}
+        <main className="flex-1 flex flex-col overflow-hidden relative">
+          <button
+            onClick={() => setShowPreview((v) => !v)}
+            className="absolute top-2 right-2 z-20 px-2 py-1 rounded text-[10px] bg-[var(--color-surface-2)] border border-[var(--color-border)] text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:border-[var(--color-accent)] transition-colors"
+            title={showPreview ? 'Hide Preview' : 'Show Preview'}
+          >
+            {showPreview ? '⊟ Hide Preview' : '⊞ Show Preview'}
+          </button>
+          {showPreview ? (
+            <div className="flex-1 relative">
+              <PathPreview send={send} />
+            </div>
+          ) : (
+            <div className="flex-1 overflow-hidden flex flex-col">
+              <div className="px-3 py-2 border-b border-[var(--color-border)]">
+                <span className="text-[10px] text-[var(--color-text-muted)] uppercase tracking-wider">Keyframe List</span>
+              </div>
+              <div className="flex-1 overflow-y-auto">
+                <KeyframeTable send={send} expanded />
+              </div>
+            </div>
+          )}
         </main>
       </div>
 
-      {/* Bottom — KeyframeList (resizable + collapsible) + Timeline + Controls */}
-      <div className="shrink-0 flex flex-col">
-        {/* KeyframeList panel */}
-        <div
-          className="bg-[var(--color-surface)] border-t border-[var(--color-border)] flex flex-col overflow-hidden"
-          style={{ height: kfListOpen ? kfListHeight : 'auto' }}
-        >
-          {/* Header row with drag handle + collapse toggle */}
-          <div
-            className="flex items-center justify-between px-4 py-1 border-b border-[var(--color-border)] select-none"
-            style={{ cursor: kfListOpen ? 'ns-resize' : 'default' }}
-            onMouseDown={kfListOpen ? onKfListDragStart : undefined}
-          >
-            <span className="text-[10px] text-[var(--color-text-muted)] uppercase tracking-wider pointer-events-none">
-              Keyframes
-            </span>
-            <button
-              className="p-0.5 rounded text-[var(--color-text-muted)] hover:text-[var(--color-text)] transition-colors"
-              onMouseDown={(e) => e.stopPropagation()}
-              onClick={() => setKfListOpen((o) => !o)}
-              title={kfListOpen ? 'Collapse' : 'Expand'}
-            >
-              {kfListOpen ? <ChevronDown size={13} /> : <ChevronUp size={13} />}
-            </button>
-          </div>
-
-          {/* Table content */}
-          {kfListOpen && (
-            <div className="flex-1 overflow-auto">
-              <KeyframeList send={send} />
-            </div>
-          )}
-        </div>
-
+      {/* Bottom — DaVinci-style: Timeline + Controls */}
+      <div className="shrink-0 flex flex-col border-t border-[var(--color-border)]">
         <Timeline send={send} />
+        <KeyframeTable send={send} showCopyPaste />
         <ControlPanel send={send} />
       </div>
     </div>

@@ -1,4 +1,5 @@
 import { Plus, Download, Upload, Trash2 } from 'lucide-react'
+import { useState, useRef } from 'react'
 import { Button } from '@/components/ui/Button'
 import { ConnectionBadge } from '@/components/control/ConnectionBadge'
 import { useShotStore } from '@/store/shotStore'
@@ -6,8 +7,22 @@ import { useKeyframeStore } from '@/store/keyframeStore'
 import type { Shot } from '@/types/protocol'
 
 export function Header() {
-  const { shots, activeId, setActiveShot, createShot, deleteShot, importShot, exportShot } = useShotStore()
+  const { shots, activeId, setActiveShot, createShot, deleteShot, renameShot, importShot, exportShot } = useShotStore()
   const { setKeyframes } = useKeyframeStore()
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [editName, setEditName] = useState('')
+  const editInputRef = useRef<HTMLInputElement>(null)
+
+  const startRename = (shot: Shot) => {
+    setEditingId(shot.id)
+    setEditName(shot.name)
+    setTimeout(() => { editInputRef.current?.select() }, 0)
+  }
+
+  const commitRename = () => {
+    if (editingId && editName.trim()) renameShot(editingId, editName.trim())
+    setEditingId(null)
+  }
 
   const handleShotChange = (id: string) => {
     setActiveShot(id)
@@ -64,17 +79,38 @@ export function Header() {
       {/* Shot tabs */}
       <div className="flex items-center gap-1 flex-1 overflow-x-auto">
         {shots.map((shot) => (
-          <button
+          <div
             key={shot.id}
-            onClick={() => handleShotChange(shot.id)}
-            className={`px-3 h-7 rounded text-xs whitespace-nowrap transition-colors ${
+            className={`relative flex items-center h-7 rounded text-xs whitespace-nowrap transition-colors ${
               shot.id === activeId
                 ? 'bg-[var(--color-surface-2)] text-[var(--color-text)] border border-[var(--color-border)]'
                 : 'text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-surface-2)]'
             }`}
           >
-            {shot.name}
-          </button>
+            {editingId === shot.id ? (
+              <input
+                ref={editInputRef}
+                value={editName}
+                onChange={(e) => setEditName(e.target.value)}
+                onBlur={commitRename}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') commitRename()
+                  if (e.key === 'Escape') setEditingId(null)
+                }}
+                className="px-2 h-full w-28 bg-transparent outline-none border-none text-xs text-[var(--color-text)]"
+                autoFocus
+              />
+            ) : (
+              <button
+                onClick={() => handleShotChange(shot.id)}
+                onDoubleClick={() => startRename(shot)}
+                className="px-3 h-full"
+                title="Double-click to rename"
+              >
+                {shot.name}
+              </button>
+            )}
+          </div>
         ))}
         <Button size="icon" variant="ghost" onClick={() => createShot()} title="New shot">
           <Plus size={13} />

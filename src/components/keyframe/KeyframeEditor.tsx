@@ -169,6 +169,63 @@ export function KeyframeEditor({ send }: KeyframeEditorProps) {
           ))}
         </div>
       </div>
+
+      {/* Depth of Field */}
+      <div className="flex flex-col gap-2">
+        <div className="flex items-center justify-between">
+          <span className="text-[10px] text-[var(--color-text-muted)] uppercase tracking-wider">Depth of Field</span>
+          <button
+            onClick={() => update({ dofEnabled: !kf.dofEnabled })}
+            className={`px-2 py-0.5 rounded text-[10px] border transition-colors ${
+              kf.dofEnabled
+                ? 'bg-[var(--color-accent)] text-white border-[var(--color-accent)]'
+                : 'bg-[var(--color-surface-2)] text-[var(--color-text-muted)] border-[var(--color-border)] hover:border-[var(--color-accent)]'
+            }`}
+          >
+            {kf.dofEnabled ? 'ON' : 'OFF'}
+          </button>
+        </div>
+        {kf.dofEnabled && (
+          <div className="flex flex-col gap-2 pl-1 border-l-2 border-[var(--color-accent)]/40">
+            <div className="flex flex-col gap-0.5">
+              <span className="text-[9px] text-[var(--color-text-muted)]">Focus Distance (m)</span>
+              <NumericInput
+                value={kf.dofFocusDistance ?? 10}
+                onChange={(v) => update({ dofFocusDistance: v })}
+                step={0.1}
+                steps={[0.1, 1, 10]}
+                min={0.1}
+                max={1000}
+                decimals={2}
+              />
+            </div>
+            <div className="flex flex-col gap-0.5">
+              <span className="text-[9px] text-[var(--color-text-muted)]">Aperture (f-stop)</span>
+              <NumericInput
+                value={kf.dofAperture ?? 5.6}
+                onChange={(v) => update({ dofAperture: v })}
+                step={0.1}
+                steps={[0.1, 1, 10]}
+                min={0.1}
+                max={32}
+                decimals={1}
+              />
+            </div>
+            <div className="flex flex-col gap-0.5">
+              <span className="text-[9px] text-[var(--color-text-muted)]">Focal Length (mm)</span>
+              <NumericInput
+                value={kf.dofFocalLength ?? 50}
+                onChange={(v) => update({ dofFocalLength: v })}
+                step={1}
+                steps={[1, 10, 50]}
+                min={1}
+                max={300}
+                decimals={0}
+              />
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   )
 }

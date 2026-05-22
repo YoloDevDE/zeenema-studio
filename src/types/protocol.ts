@@ -13,6 +13,11 @@ export interface Keyframe {
   bezierHandles?: [number, number, number, number]
   rotEasing?: EasingType
   rotBezierHandles?: [number, number, number, number]
+  // Depth of Field
+  dofEnabled?: boolean
+  dofFocusDistance?: number
+  dofAperture?: number
+  dofFocalLength?: number
 }
 
 export interface Shot {
@@ -37,6 +42,7 @@ export type ClientMessage =
   | { type: 'CAPTURE_KEYFRAME'; data: { time: number } }
   | { type: 'GET_STATE' }
   | { type: 'SET_SHOT'; data: { keyframes: Keyframe[]; durationSeconds: number; fps: number } }
+  | { type: 'GET_LEVEL' }
 
 // ── Plugin → Client ──────────────────────────────────────────────────────────
 
@@ -47,3 +53,4 @@ export type PluginMessage =
   | { type: 'SCENE_READY'; data: { sceneName: string } }
   | { type: 'ERROR'; data: { message: string } }
   | { type: 'CAMERA_POS'; data: { pos: [number, number, number]; rot: [number, number, number]; fov: number } }
+  | { type: 'LEVEL_DATA'; data: { levelName: string; blox: unknown[] } }
