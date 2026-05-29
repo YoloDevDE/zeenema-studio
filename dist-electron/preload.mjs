@@ -1,2 +1,16 @@
-let e=require("electron");e.contextBridge.exposeInMainWorld(`zeenema`,{loadData:()=>e.ipcRenderer.invoke(`load-data`),saveData:t=>e.ipcRenderer.invoke(`save-data`,t),newProject:()=>e.ipcRenderer.invoke(`project-new`),openProject:()=>e.ipcRenderer.invoke(`project-open`),saveProject:t=>e.ipcRenderer.invoke(`project-save`,t),saveProjectAs:t=>e.ipcRenderer.invoke(`project-save-as`,t),chooseDirectory:()=>e.ipcRenderer.invoke(`choose-directory`),getDefaultProjectsDir:()=>e.ipcRenderer.invoke(`get-default-projects-dir`),saveProjectToDir:(t,n,r)=>e.ipcRenderer.invoke(`project-save-to-dir`,t,n,r)});
+let electron = require("electron");
+//#region electron/preload.ts
+electron.contextBridge.exposeInMainWorld("zeenema", {
+	loadData: () => electron.ipcRenderer.invoke("load-data"),
+	saveData: (data) => electron.ipcRenderer.invoke("save-data", data),
+	newProject: () => electron.ipcRenderer.invoke("project-new"),
+	openProject: () => electron.ipcRenderer.invoke("project-open"),
+	saveProject: (data) => electron.ipcRenderer.invoke("project-save", data),
+	saveProjectAs: (data) => electron.ipcRenderer.invoke("project-save-as", data),
+	chooseDirectory: () => electron.ipcRenderer.invoke("choose-directory"),
+	getDefaultProjectsDir: () => electron.ipcRenderer.invoke("get-default-projects-dir"),
+	saveProjectToDir: (data, dirPath, fileName) => electron.ipcRenderer.invoke("project-save-to-dir", data, dirPath, fileName)
+});
+//#endregion
+
 //# sourceMappingURL=preload.mjs.map
