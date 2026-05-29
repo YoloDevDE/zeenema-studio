@@ -1,0 +1,2 @@
+let e=require("electron");e.contextBridge.exposeInMainWorld(`zeenema`,{loadData:()=>e.ipcRenderer.invoke(`load-data`),saveData:t=>e.ipcRenderer.invoke(`save-data`,t),newProject:()=>e.ipcRenderer.invoke(`project-new`),openProject:()=>e.ipcRenderer.invoke(`project-open`),saveProject:t=>e.ipcRenderer.invoke(`project-save`,t),saveProjectAs:t=>e.ipcRenderer.invoke(`project-save-as`,t)});
+//# sourceMappingURL=preload.js.map
